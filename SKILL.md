@@ -1,8 +1,12 @@
 ---
 name: vibecoding-security
-description: "Use this skill when building, reviewing, or shipping any web app or vibe coding project (Next.js, Supabase, AI apps). Triggers include: "is my app secure", "security check", "before I ship", "review my project", any new project setup, or when adding auth/API/database features. Also triggers automatically when writing API routes, handling user input, setting up Supabase tables, or integrating AI APIs."
-
+description: >
+  Use this skill when building, reviewing, or shipping any web app
+  or vibe coding project. Triggers include - is my app secure,
+  security check, before I ship, review my project, any new project
+  setup, or when adding auth/API/database features.
 ---
+
 
 # Vibecoding Security Skill
 

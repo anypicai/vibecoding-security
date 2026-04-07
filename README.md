@@ -266,32 +266,74 @@ Without RLS, every logged-in user can read everyone else's data. A user could al
 
 **Important:** Even if your frontend never queries Supabase directly, the Supabase Anon key is publicly visible in your frontend code. Anyone can use it to query PostgREST directly — bypassing your backend entirely. RLS is the last line of defense.
 
+### The Privilege Escalation Trap (very common mistake)
+
+This is the most dangerous RLS mistake and it's easy to miss. The standard Supabase pattern allows users to update their own row:
+
+```sql
+-- DANGEROUS if plan/permissions are in the same table
+CREATE POLICY "users_update_own" ON users FOR UPDATE
+  USING (auth.uid() = user_id);
+```
+
+If your `users` table contains both profile data AND privilege columns, a user can update their own privileges directly via PostgREST:
+
+```javascript
+// User opens DevTools and runs this in the browser console:
+await supabase.from('users')
+  .update({ plan: 'pro', is_admin: true, post_limit: 99999 })
+  .eq('user_id', 'my-own-id')
+// → succeeds if UPDATE policy exists on the table
+```
+
+**The fix — two options:**
+
+Option A: Separate privilege columns into a backend-only table with deny_anon policy. Users can update their profile table, but never the privileges table.
+
+Option B: Use a full deny model — no direct client access to any table, all mutations go through your backend API with server-side authorization checks.
+
+```sql
+-- Option B: Full deny model (most secure)
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "deny_all_client_access" ON users
+  FOR ALL TO anon, authenticated USING (false);
+-- Backend uses service_role key which bypasses RLS entirely
+```
+
+**Columns that must NEVER be user-writable:**
+- `plan`, `subscription_tier`, `is_pro`, `is_admin`
+- `post_limit`, `daily_limit`, `monthly_limit` (any usage cap)
+- `ever_paid`, `is_free_member` (feature gating flags)
+- `credits`, `tokens`, `balance` (any currency/quota)
+- `role`, `permissions` (any access control field)
+
 ### Mandatory Rules
 
 **Two policy patterns — pick the right one:**
 
 ```sql
--- Pattern 1: User owns their data (standard)
-ALTER TABLE your_table ENABLE ROW LEVEL SECURITY;
+-- Pattern 1: User owns their data (standard — safe only if privileges are separate)
+ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "users_read_own" ON your_table FOR SELECT
+CREATE POLICY "users_read_own" ON user_profiles FOR SELECT
   USING (auth.uid() = user_id);
-CREATE POLICY "users_insert_own" ON your_table FOR INSERT
+CREATE POLICY "users_insert_own" ON user_profiles FOR INSERT
   WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "users_update_own" ON your_table FOR UPDATE
+CREATE POLICY "users_update_own" ON user_profiles FOR UPDATE
   USING (auth.uid() = user_id);
-CREATE POLICY "users_delete_own" ON your_table FOR DELETE
+CREATE POLICY "users_delete_own" ON user_profiles FOR DELETE
   USING (auth.uid() = user_id);
 
--- Pattern 2: Deny anon entirely (backend-only tables)
+-- Pattern 2: Full deny — backend-only access via service_role
 ALTER TABLE your_table ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "deny_anon" ON your_table FOR ALL TO anon USING (false);
+CREATE POLICY "deny_all_client" ON your_table
+  FOR ALL TO anon, authenticated USING (false);
 ```
 
-**Use Pattern 2 (deny_anon) when:**
+**Use Pattern 2 (full deny) when:**
 - Your backend uses service_role to access the table
+- The table contains any privilege, plan, limit, or permission columns
 - The table should never be directly queryable from the browser
-- Examples: user_events, internal logs, audit trails
 
 **Always write explicit policies** — don't rely on implicit deny. Supabase's behavior could change, and implicit deny gives no audit trail.
 
@@ -299,7 +341,8 @@ CREATE POLICY "deny_anon" ON your_table FOR ALL TO anon USING (false);
 1. Create a second Supabase auth account
 2. Log in as User B
 3. Attempt to read, modify, or delete User A's data via PostgREST directly
-4. Every attempt must fail with a permission error
+4. Attempt to update your own `plan`, `is_admin`, or limit columns via PostgREST
+5. Every attempt must fail with a permission error
 
 ---
 
@@ -371,7 +414,9 @@ def cache_user(token: str, user: dict):
 ### Row Level Security
 - [ ] RLS enabled on every Supabase table
 - [ ] Explicit policy on every table (no implicit deny reliance)
-- [ ] Tested with a second account
+- [ ] Privilege columns (plan, is_admin, limits, credits) NOT in a table with UPDATE policy
+- [ ] Tested with second account — User B cannot access User A's data
+- [ ] Tested privilege escalation — user cannot update own plan/limit/admin via PostgREST
 - [ ] No security logic lives only in the frontend
 
 ### Auth & Middleware
